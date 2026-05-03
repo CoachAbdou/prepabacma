@@ -1461,6 +1461,29 @@ body.annual-billing .price-annual { display: block }
 .step:hover .step-cta-lnk{opacity:1}
 .step{cursor:pointer}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// La clé anon Supabase — récupérée depuis Settings > API > anon public
+const _SUPA_URL = 'https://zhhihytnhzrrawtlizfl.supabase.co';
+const _SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpoaGloeXRuaHpycmF3dGxpemZsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc4MjU3NjYsImV4cCI6MjA5MzQwMTc2Nn0.cbDNXaTwDl5l5biaCRLcaf5H4b7L4rQZcpd_8o0OwoM';
+const _sb = supabase.createClient(_SUPA_URL, _SUPA_KEY);
+// Restaurer session existante
+document.addEventListener("DOMContentLoaded", async function() {
+  const { data: { session } } = await _sb.auth.getSession();
+  if (session) { await _loadProfile(session.user); }
+  _sb.auth.onAuthStateChange(async (evt, sess) => {
+    if (evt === "SIGNED_IN" && sess) { await _loadProfile(sess.user); }
+    if (evt === "SIGNED_OUT") { currentUser = null; updateNavForUser(); }
+  });
+});
+async function _loadProfile(user) {
+  const { data: p } = await _sb.from("profiles").select("*").eq("id", user.id).single();
+  const name = (p && p.full_name) ? p.full_name : user.email.split("@")[0];
+  const ini = name.split(" ").map(n=>n[0]).join("").toUpperCase().slice(0,2);
+  loginUser({ id: user.id, name, email: user.email, niveau: (p&&p.niveau)||"2bac",
+    filiere: (p&&p.filiere)||"SM", plan: (p&&p.plan)||"gratuit", initials: ini, fromSupa: true });
+}
+</script>
 </head>
 <body>
 
@@ -3312,36 +3335,19 @@ function switchTab(tab) {
 function doLogin() {
   const email = document.getElementById('login-email').value.trim();
   const pass  = document.getElementById('login-pass').value;
-  const alert = document.getElementById('login-alert');
-  
-  if (!email || !pass) {
-    alert.textContent = '⚠ Merci de remplir tous les champs.';
-    alert.classList.add('show'); return;
-  }
-  if (!email.includes('@')) {
-    alert.textContent = '⚠ Adresse email invalide.';
-    alert.classList.add('show'); return;
-  }
-  
-  // Demo credentials OR any valid format
-  const isDemo = (email.toLowerCase() === 'yasmine@email.ma' && pass === 'bac2026') ||
-                 (email.toLowerCase() === 'demo@prepabacma.ma' && pass === 'demo2026') ||
-                 (email.includes('@') && pass.length >= 6);
-  
-  if (isDemo) {
-    const name = email.split('@')[0].replace(/[._]/g, ' ');
-    loginUser({
-      name: capitalize(name),
-      email: email,
-      niveau: '2ème Bac',
-      filiere: 'SM',
-      plan: 'premium',
-      initials: name.slice(0,2).toUpperCase()
-    });
-  } else {
-    alert.textContent = '❌ Email ou mot de passe incorrect. (Essayez demo@prepabacma.ma / demo2026)';
-    alert.classList.add('show');
-  }
+  const alertEl = document.getElementById('login-alert');
+  if (!email || !pass) { alertEl.textContent = '⚠ Remplis tous les champs.'; alertEl.classList.add('show'); return; }
+  const btn = document.querySelector('#form-login .btn-primary');
+  if (btn) { btn.textContent = 'Connexion...'; btn.style.opacity = '.6'; btn.style.pointerEvents = 'none'; }
+  alertEl.classList.remove('show');
+  _sb.auth.signInWithPassword({ email, password: pass }).then(({ error }) => {
+    if (btn) { btn.textContent = 'Se connecter'; btn.style.opacity = ''; btn.style.pointerEvents = ''; }
+    if (error) {
+      alertEl.textContent = '❌ ' + (error.message.includes('Invalid') ? 'Email ou mot de passe incorrect.' : error.message);
+      alertEl.classList.add('show');
+    }
+    // onAuthStateChange prend le relais
+  });
 }
 
 function showForgot() {
@@ -3410,14 +3416,24 @@ function completeRegister() {
   const prenom = document.getElementById('reg-prenom').value.trim();
   const nom    = document.getElementById('reg-nom').value.trim();
   const email  = document.getElementById('reg-email').value.trim();
-  const filiere = (document.getElementById('reg-filiere') && document.getElementById('reg-filiere').value) || selectedFiliere;
-  loginUser({
-    name: prenom + ' ' + nom,
-    email: email,
-    niveau: selectedFiliere || '2ème Bac',
-    filiere: filiere || 'SM',
-    plan: selectedPlan,
-    initials: (prenom.charAt(0) + nom.charAt(0)).toUpperCase()
+  const passEl = document.getElementById('reg-pass');
+  const pass   = passEl ? passEl.value : '';
+  const filiere = selectedFiliere || 'SM';
+  if (!prenom || !nom || !email) { showToast('Remplis tous les champs', 'error'); return; }
+  if (pass.length < 6) { showToast('Mot de passe : 6 caractères minimum', 'error'); return; }
+  const btn = document.querySelector('#reg-step-3 .btn-primary');
+  if (btn) { btn.textContent = 'Création...'; btn.style.opacity = '.6'; btn.style.pointerEvents = 'none'; }
+  _sb.auth.signUp({ email, password: pass, options: {
+    data: { full_name: prenom + ' ' + nom, filiere, niveau: currentNiveau||'2bac', plan: selectedPlan||'gratuit' }
+  }}).then(({ data, error }) => {
+    if (btn) { btn.textContent = 'Commencer →'; btn.style.opacity = ''; btn.style.pointerEvents = ''; }
+    if (error) { console.error('Supabase error:', error); showToast('❌ ' + error.message, 'error'); return; }
+    if (data.user) {
+      _sb.from('profiles').upsert({ id: data.user.id, full_name: prenom+' '+nom, email,
+        filiere, niveau: currentNiveau||'2bac', plan: selectedPlan||'gratuit', created_at: new Date().toISOString() });
+    }
+    if (data.session) { _loadProfile(data.user); }
+    else { closeAuth(); showToast('Compte créé ! Vérifie ton email pour confirmer ✉️', 'success'); }
   });
 }
 
@@ -3441,15 +3457,8 @@ function checkPassStrength(val) {
 }
 
 function socialLogin(provider) {
-  closeAuth();
-  const names = { google: 'Yasmine El Amrani', facebook: 'Karim Moussaoui' };
-  const emails = { google: 'yasmine@gmail.com', facebook: 'karim@facebook.com' };
-  loginUser({
-    name: names[provider] || provider === 'google' ? 'Élève Google' : 'Élève Facebook',
-    email: 'eleve@' + provider + '.com',
-    niveau: '2ème Bac', filiere: 'SM', plan: 'free',
-    initials: provider === 'google' ? 'GG' : 'FB'
-  });
+  _sb.auth.signInWithOAuth({ provider, options: { redirectTo: window.location.href }
+  }).then(({ error }) => { if (error) showToast('Erreur ' + provider + ': ' + error.message, 'error'); });
 }
 
 // ══════════════════════════════════════════
@@ -3461,6 +3470,7 @@ function loginUser(user) {
   updateNavForUser();
   updateDashboardForUser();
   showToast('Bienvenue ' + user.name.split(' ')[0] + ' ! 🎉', 'success');
+  if (user.fromSupa) { loadProgression(); loadDashboardData(); }
   // Hide float CTA
   if (cta) cta.classList.remove('visible');
   // Go to dashboard
@@ -3468,11 +3478,13 @@ function loginUser(user) {
 }
 
 function logout() {
-  currentUser = null;
-  closeUserMenu();
-  updateNavForUser();
-  go('landing');
-  showToast('Déconnecté. À bientôt !');
+  _sb.auth.signOut().then(() => {
+    currentUser = null;
+    closeUserMenu();
+    updateNavForUser();
+    go('landing');
+    showToast('Déconnecté. À bientôt !');
+  });
 }
 
 function updateNavForUser() {
@@ -4299,16 +4311,101 @@ function addNotification(icon, text, bg) {
 
 // ── Compte à rebours Bac 2026 ──
 (function() {
-  var bacDate = new Date('2026-06-15');
   var today = new Date();
   today.setHours(0,0,0,0);
-  var diff = Math.ceil((bacDate - today) / (1000 * 60 * 60 * 24));
-  var txt = diff > 0 ? diff + ' jours avant le Bac' : 'Bac 2026 — Bonne chance !';
+
+  // Dates officielles Bac 2026
+  var dates = {
+    regionalOrd:      new Date('2026-06-01'),  // Régional session ordinaire
+    nationalOrd:      new Date('2026-06-04'),  // National session ordinaire
+    regionalRatt:     new Date('2026-06-29'),  // Régional rattrapage
+    nationalRatt:     new Date('2026-07-02'),  // National rattrapage
+  };
+
+  function daysTo(d) { return Math.ceil((d - today) / 86400000); }
+
+  // Déterminer le prochain événement
+  var next = null, label = '';
+  if (today < dates.regionalOrd) {
+    next = dates.regionalOrd;
+    label = 'Bac Régional (session ordinaire)';
+  } else if (today < dates.nationalOrd) {
+    next = dates.nationalOrd;
+    label = 'Bac National (session ordinaire)';
+  } else if (today < dates.regionalRatt) {
+    next = dates.regionalRatt;
+    label = 'Bac Régional (rattrapage)';
+  } else if (today < dates.nationalRatt) {
+    next = dates.nationalRatt;
+    label = 'Bac National (rattrapage)';
+  }
+
+  var diff = next ? daysTo(next) : 0;
+  var shortTxt = next ? diff + ' jour' + (diff > 1 ? 's' : '') : 'Bac terminé !';
+  var longTxt  = next ? diff + ' jour' + (diff > 1 ? 's' : '') + ' avant le ' + label : 'Bac 2026 terminé — Félicitations !';
+
+  // Mettre à jour les éléments
   var el1 = document.getElementById('dashCountdown');
   var el2 = document.getElementById('bacCountdown');
-  if (el1) el1.textContent = txt;
-  if (el2) el2.textContent = diff > 0 ? diff + ' jours' : '0 jour';
+  if (el1) el1.textContent = longTxt;
+  if (el2) el2.textContent = shortTxt;
+
+  // Mettre à jour le ticker si présent
+  document.querySelectorAll('.ticker-item').forEach(function(t) {
+    if (t.textContent.includes('Bac dans')) {
+      t.textContent = '📅 ' + label + ' dans ' + diff + ' jour' + (diff > 1 ? 's' : '');
+    }
+  });
 })();
+
+// ══ SUPABASE Progression ══
+async function saveProgression(matiere, chapitre, pct) {
+  if (!currentUser || !currentUser.id) return;
+  await _sb.from('progression').upsert(
+    { user_id: currentUser.id, matiere, chapitre, pourcentage: pct, updated_at: new Date().toISOString() },
+    { onConflict: 'user_id,matiere,chapitre' }
+  );
+}
+async function loadProgression() {
+  if (!currentUser || !currentUser.id) return;
+  const { data } = await _sb.from('progression').select('*').eq('user_id', currentUser.id);
+  if (!data) return;
+  data.forEach(p => {
+    document.querySelectorAll('[data-matiere="' + p.matiere + '"] .pbar-fill').forEach(bar => {
+      bar.style.width = p.pourcentage + '%';
+    });
+  });
+}
+async function saveQuizResult(matiere, score, total) {
+  if (!currentUser || !currentUser.id) return;
+  await _sb.from('quiz_results').insert({
+    user_id: currentUser.id, matiere, score, total,
+    pourcentage: Math.round(score/total*100), taken_at: new Date().toISOString()
+  });
+  showToast('Quiz sauvegardé ! +' + Math.round(score/total*100) + ' pts 🎯', 'success');
+}
+async function loadDashboardData() {
+  if (!currentUser || !currentUser.id) return;
+  const { data: quizzes } = await _sb.from('quiz_results').select('*')
+    .eq('user_id', currentUser.id).order('taken_at', { ascending: false }).limit(1);
+  if (quizzes && quizzes.length > 0) {
+    const kpi = document.getElementById('kpi-objectif');
+    if (kpi) kpi.textContent = (quizzes[0].pourcentage / 5).toFixed(1);
+  }
+  // Streak
+  const today = new Date().toISOString().split('T')[0];
+  await _sb.from('activity_log').upsert({ user_id: currentUser.id, date: today }, { onConflict: 'user_id,date' });
+  const { data: logs } = await _sb.from('activity_log').select('date')
+    .eq('user_id', currentUser.id).order('date', { ascending: false }).limit(60);
+  if (logs) {
+    let streak = 0; let check = new Date(today);
+    for (const log of logs) {
+      if (log.date === check.toISOString().split('T')[0]) { streak++; check.setDate(check.getDate()-1); } else break;
+    }
+    const ks = document.getElementById('kpi-streak');
+    if (ks) ks.textContent = streak;
+  }
+}
 </script>
 
 </body>
